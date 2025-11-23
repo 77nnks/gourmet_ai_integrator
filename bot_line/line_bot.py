@@ -177,6 +177,28 @@ def build_store_info_flex(details, summary, tags, store_type, recs, place_id):
 
 
 # ======================
+# LINE Webhook エンドポイント
+# ======================
+@app.route("/callback", methods=['POST'])
+def callback():
+    signature = request.headers.get('X-Line-Signature')
+    body = request.get_data(as_text=True)
+
+    print("Received LINE Webhook:", body)
+
+    if signature is None:
+        abort(400, "No signature")
+
+    try:
+        handler.handle(body, signature)
+    except Exception as e:
+        print("LINE ERROR:", e)
+        abort(400)
+
+    return "OK", 200
+
+
+# ======================
 # PostbackEvent
 # ======================
 @handler.add(PostbackEvent)
