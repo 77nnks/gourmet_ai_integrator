@@ -1,7 +1,53 @@
 # modules/utils.py
 import math
 import re
+import os
 
+
+# Google Places Photo URL 生成
+def build_photo_url(photo_reference, maxwidth=800):
+    key = os.getenv("GOOGLE_API_KEY")
+    return (
+        "https://maps.googleapis.com/maps/api/place/photo"
+        f"?maxwidth={maxwidth}&photo_reference={photo_reference}&key={key}"
+    )
+
+
+# 店タイプ → アイコン
+TYPE_ICON = {
+    "cafe": "☕",
+    "coffee": "☕",
+    "bar": "🍺",
+    "ramen": "🍜",
+    "yakiniku": "🍖",
+    "sushi": "🍣",
+    "restaurant": "🍽️",
+    "french": "🥐",
+    "italian": "🍝",
+    "izakaya": "🍶",
+    "fastfood": "🍔",
+    "bistro": "🥗",
+}
+
+# サブタイプ → アイコン
+SUBTYPE_ICON = {
+    "スイーツ": "🍰",
+    "軽食": "🥪",
+    "デート": "💑",
+    "おしゃれ": "✨",
+    "静か": "🤫",
+    "カジュアル": "🙂",
+    "居酒屋": "🍶",
+}
+
+# ★評価テキスト
+def build_rating_stars(rating):
+    if not rating:
+        return "評価なし"
+
+    stars = "★" * int(round(rating))
+    empty = "☆" * (5 - int(round(rating)))
+    return f"{stars}{empty}  {rating}"
 
 # -----------------------------------------------
 # Google price_level → 日本語料金表記に変換
