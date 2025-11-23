@@ -6,15 +6,17 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
-    PostbackEvent, FlexSendMessage
+    PostbackEvent, FlexSendMessage,
 )
 
 # 共通モジュール
 from modules import (
     search_candidates, get_place_details,
-    summarize_reviews, infer_store_type, infer_recommendation,
-    classify_tags, upsert_store, build_page_url,
-    build_photo_url, TYPE_ICON, SUBTYPE_ICON, build_rating_stars
+    summarize_reviews, infer_store_type,
+    infer_recommendation, classify_tags,
+    upsert_store, build_page_url,
+    build_photo_url, TYPE_ICON, SUBTYPE_ICON,
+    build_rating_stars
 )
 
 app = Flask(__name__)
@@ -25,39 +27,19 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-
-# ======================
-# LINE Webhook
-# ======================
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers.get('X-Line-Signature')
-    body = request.get_data(as_text=True)
-
-    if signature is None:
-        abort(400, "X-Line-Signature missing")
-
-    try:
-        handler.handle(body, signature)
-    except Exception as e:
-        print("LINE ERROR:", e)
-        abort(400)
-
-    return "OK", 200
-
-
 # ======================
 # 状態管理
 # ======================
-user_state = {}   # user_id : { mode, place_id, details... }
+user_state = {}   # user_id : { mode, place_id, details, summary, tags, store_type, recs }
 
 
 # ======================
-# Flex：候補一覧
+# 1. 候補一覧 Flex（キャンセル付き）
 # ======================
 def build_candidates_flex(candidates):
     bubbles = []
 
+    # 候補
     for c in candidates[:10]:
         bubble = {
             "type": "bubble",
@@ -67,20 +49,8 @@ def build_candidates_flex(candidates):
                 "layout": "vertical",
                 "spacing": "sm",
                 "contents": [
-                    {
-                        "type": "text",
-                        "text": c["name"],
-                        "weight": "bold",
-                        "size": "md",
-                        "wrap": True
-                    },
-                    {
-                        "type": "text",
-                        "text": c["address"],
-                        "size": "sm",
-                        "color": "#777777",
-                        "wrap": True
-                    }
+                    {"type": "text", "text": c["name"], "weight": "bold", "size": "md", "wrap": True},
+                    {"type": "text", "text": c["address"], "size": "sm", "color": "#777777", "wrap": True},
                 ]
             },
             "footer": {
@@ -102,118 +72,110 @@ def build_candidates_flex(candidates):
         }
         bubbles.append(bubble)
 
+    # キャンセル
+    cancel_bubble = {
+        "type": "bubble",
+        "size": "micro",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": "キャンセル", "weight": "bold", "size": "md"},
+                {"type": "text", "text": "選択をやり直す場合はこちら", "size": "sm", "color": "#777777"},
+            ]
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "style": "secondary",
+                    "action": {
+                        "type": "postback",
+                        "label": "キャンセル",
+                        "data": "CANCEL_SELECT"
+                    }
+                }
+            ]
+        }
+    }
+
+    bubbles.append(cancel_bubble)
+
     return {"type": "carousel", "contents": bubbles}
 
 
 # ======================
-# Flex：店舗情報（AI解析＋写真＋評価＋アイコン）
+# 2. 店舗情報 Flex（写真つき）
 # ======================
 def build_store_info_flex(details, summary, tags, store_type, recs, place_id):
 
-    # 🔹 写真
-    photos = details.get("photos", [])
-    photo_url = "https://via.placeholder.com/800x500?text=No+Image"
-    if photos:
-        ref = photos[0].get("photo_reference")
-        if ref:
-            photo_url = build_photo_url(ref)
+    # アイコン
+    type_icon = TYPE_ICON.get(store_type.get("type", "").lower(), "🍽")
+    subtype_icon = SUBTYPE_ICON.get(store_type.get("subtype", ""), "✨")
 
-    # 🔹 店タイプアイコン
-    t = store_type.get("type", "")
-    type_icon = TYPE_ICON.get(t.lower(), "🍽️")
-
-    # 🔹 サブタイプアイコン
-    subt = store_type.get("subtype", "")
-    subtype_icon = "✨"
-    for k, v in SUBTYPE_ICON.items():
-        if k in subt:
-            subtype_icon = v
-            break
-
-    # 🔹 ★評価
-    rating = details.get("rating")
-    rating_text = build_rating_stars(rating)
-
+    # タグとおすすめ
     tag_text = ", ".join(tags) if tags else "なし"
     rec_text = ", ".join(recs) if recs else "不明"
 
+    # ★評価
+    rating_stars = build_rating_stars(details.get("rating"))
+
+    # 店舗写真
+    photo_url = None
+    photos = details.get("photos")
+    if photos:
+        photo_url = build_photo_url(photos[0].get("photo_reference"))
+
     bubble = {
         "type": "bubble",
+        "size": "mega",
         "hero": {
             "type": "image",
-            "url": photo_url,
+            "url": photo_url or "https://via.placeholder.com/1024x512?text=No+Image",
             "size": "full",
             "aspectRatio": "20:13",
-            "aspectMode": "cover"
+            "aspectMode": "cover",
         },
         "body": {
             "type": "box",
             "layout": "vertical",
             "spacing": "md",
             "contents": [
-                {
-                    "type": "text",
-                    "text": details["name"],
-                    "weight": "bold",
-                    "size": "xl",
-                    "wrap": True,
-                },
-                {
-                    "type": "text",
-                    "text": details.get("formatted_address", "住所不明"),
-                    "size": "sm",
-                    "color": "#777777",
-                    "wrap": True,
-                },
-                {
-                    "type": "text",
-                    "text": rating_text,
-                    "size": "md",
-                    "wrap": True,
-                    "margin": "md"
-                },
+                {"type": "text", "text": details["name"], "weight": "bold", "size": "xl", "wrap": True},
+                {"type": "text", "text": details.get("formatted_address", "住所不明"), "size": "sm", "color": "#777777", "wrap": True},
+                {"type": "text", "text": f"評価：{rating_stars}", "size": "sm", "wrap": True},
                 {"type": "separator"},
-                {
-                    "type": "text",
-                    "text": f"{type_icon} 店タイプ：{t}",
-                    "wrap": True,
-                    "margin": "md"
-                },
-                {
-                    "type": "text",
-                    "text": f"{subtype_icon} サブタイプ：{subt}",
-                    "wrap": True
-                },
-                {
-                    "type": "text",
-                    "text": f"おすすめ：{rec_text}",
-                    "wrap": True
-                },
-                {
-                    "type": "text",
-                    "text": f"タグ：{tag_text}",
-                    "wrap": True
-                },
+                {"type": "text", "text": f"{type_icon} 店タイプ：{store_type.get('type')}", "wrap": True},
+                {"type": "text", "text": f"{subtype_icon} サブタイプ：{store_type.get('subtype')}", "wrap": True},
+                {"type": "text", "text": f"おすすめ：{rec_text}", "wrap": True},
+                {"type": "text", "text": f"タグ：{tag_text}", "wrap": True},
                 {"type": "separator"},
-                {
-                    "type": "text",
-                    "text": summary,
-                    "size": "sm",
-                    "wrap": True
-                }
+                {"type": "text", "text": summary, "size": "sm", "wrap": True},
             ]
         },
         "footer": {
             "type": "box",
-            "layout": "horizontal",
+            "layout": "vertical",
             "contents": [
                 {
                     "type": "button",
                     "style": "primary",
                     "action": {
                         "type": "postback",
-                        "label": "感想を書く",
-                        "data": f"SAVE_YES|{place_id}"
+                        "label": "感想を書いて保存する",
+                        "data": f"SAVE_WITH_COMMENT|{place_id}"
+                    }
+                },
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "color": "#4444FF",
+                    "action": {
+                        "type": "postback",
+                        "label": "保存（感想なし）",
+                        "data": f"SAVE_NO_COMMENT|{place_id}"
                     }
                 },
                 {
@@ -233,27 +195,34 @@ def build_store_info_flex(details, summary, tags, store_type, recs, place_id):
 
 
 # ======================
-# Postback Event
+# 3. Postback Handler
 # ======================
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
 
-    # --- 店選択 ---
-    if data.startswith("SELECT_PLACE"):
+    # ---- キャンセル ----
+    if data == "CANCEL_SELECT":
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("キャンセルしました。別のお店名を入力してください！")
+        )
+        return
+
+    # ---- 店選択 ----
+    if data.startswith("SELECT_PLACE|"):
         _, place_id = data.split("|")
 
-        # AI解析
         details = get_place_details(place_id)
         summary = summarize_reviews(details.get("reviews", []))
         tags = classify_tags(details["name"], details.get("types", []), summary)
         store_type = infer_store_type(details.get("types", []), summary)
         recs = infer_recommendation(details.get("types", []), summary, details["name"])
 
-        # 状態保持
         user_state[user_id] = {
-            "mode": "await_save_decision",
+            "mode": "await_save",
             "place_id": place_id,
             "details": details,
             "summary": summary,
@@ -269,90 +238,93 @@ def handle_postback(event):
         )
         return
 
-    # --- 保存しない ---
+    # ---- 保存しない ----
     if data.startswith("SAVE_NO"):
         user_state.pop(user_id, None)
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="了解しました。また別のお店を検索してくださいね！")
+            TextSendMessage("了解しました。また別のお店を検索してくださいね！")
         )
         return
 
-    # --- 保存する → 感想入力 ---
-    if data.startswith("SAVE_YES"):
+    # ---- 保存（感想なし） ----
+    if data.startswith("SAVE_NO_COMMENT|"):
+        _, place_id = data.split("|")
+        state = user_state[user_id]
+
+        page_id = upsert_store(
+            state["details"], state["summary"],
+            state["tags"], state["store_type"],
+            state["recs"], ""
+        )
+        url = build_page_url(page_id)
+
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(f"保存しました！\n{url}"))
+        return
+
+    # ---- 感想あり保存モードへ ----
+    if data.startswith("SAVE_WITH_COMMENT|"):
         user_state[user_id]["mode"] = "waiting_comment"
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="📝 感想を入力してください。\n不要な場合は「スキップ」と送ってください。")
+            TextSendMessage("📝 感想を入力してください。\n不要なら「スキップ」と送ってください。")
         )
         return
 
 
 # ======================
-# Text メッセージ
+# 4. Text Message
 # ======================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
-
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # --- 感想入力 ---
+    # ---- 感想入力 ----
     if user_id in user_state and user_state[user_id]["mode"] == "waiting_comment":
 
         state = user_state[user_id]
-        details = state["details"]
-        summary = state["summary"]
-        tags = state["tags"]
-        store_type = state["store_type"]
-        recs = state["recs"]
-
         comment = "" if text.lower() == "スキップ" else text
 
-        # Notion 保存
-        page_id = upsert_store(details, summary, tags, store_type, recs, comment)
-        notion_url = build_page_url(page_id)
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=f"保存しました！\n{notion_url}")
+        page_id = upsert_store(
+            state["details"], state["summary"],
+            state["tags"], state["store_type"],
+            state["recs"], comment
         )
+        url = build_page_url(page_id)
 
         user_state.pop(user_id, None)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(f"保存しました！\n{url}")
+        )
         return
 
-    # --- 通常検索 ---
+    # ---- 通常検索 ----
     user_state.pop(user_id, None)
 
-    query = text
-    candidates = search_candidates(query)
-
+    candidates = search_candidates(text)
     if not candidates:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="❌ 店舗が見つかりませんでした。")
+            TextSendMessage("❌ 店舗が見つかりませんでした。")
         )
         return
 
-    # 丁寧フロー
-    messages = [
-        TextSendMessage(text="🔎 どのお店にしますか？"),
-        FlexSendMessage(
-            alt_text="候補一覧",
-            contents=build_candidates_flex(candidates)
-        )
-    ]
-
-    line_bot_api.reply_message(event.reply_token, messages)
+    flex = build_candidates_flex(candidates)
+    line_bot_api.reply_message(
+        event.reply_token,
+        FlexSendMessage(alt_text="候補一覧", contents=flex)
+    )
 
 
 # ======================
-# Flask RUN
+# Flask Run
 # ======================
 def start_line_bot():
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
-
 
 if __name__ == "__main__":
     start_line_bot()
