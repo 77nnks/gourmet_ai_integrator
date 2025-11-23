@@ -127,6 +127,8 @@ def build_store_info_flex(details, summary, tags, store_type, recs, place_id):
     photos = details.get("photos")
     if photos:
         photo_url = build_photo_url(photos[0].get("photo_reference"))
+    else:
+       photo_url = None
 
     bubble = {
         "type": "bubble",

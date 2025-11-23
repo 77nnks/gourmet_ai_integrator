@@ -34,13 +34,11 @@ def search_candidates(query: str):
 # Details API（詳細取得）
 # ---------------------------
 def get_place_details(place_id: str):
-    """Google Places Details API で店舗詳細を取得"""
-
     url = (
         "https://maps.googleapis.com/maps/api/place/details/json"
         f"?place_id={place_id}"
         "&fields=name,place_id,formatted_address,opening_hours,"
-        "website,url,rating,reviews,types,price_level,geometry"
+        "website,url,rating,reviews,types,price_level,geometry,photos"
         f"&language={SEARCH_LANGUAGE}"
         f"&key={GOOGLE_API_KEY}"
     )
