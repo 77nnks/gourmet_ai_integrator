@@ -321,6 +321,24 @@ def handle_text_message(event):
 
 
 # ======================
+# LINE Webhook エンドポイント
+# ======================
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers.get("X-Line-Signature")
+
+    body = request.get_data(as_text=True)
+
+    try:
+        handler.handle(body, signature)
+    except Exception as e:
+        print("Error in callback:", e)
+        abort(400)
+
+    return "OK"
+
+
+# ======================
 # Flask Run
 # ======================
 def start_line_bot():
