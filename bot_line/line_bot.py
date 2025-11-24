@@ -276,7 +276,7 @@ def handle_text_message(event):
     text = event.message.text.strip()
 
     # ---- 感想入力 ----
-    if user_state[user_id]["mode"] == "waiting_comment":
+    if user_id in user_state and user_state[user_id].get("mode") == "waiting_comment":
         comment = "" if text.lower() == "スキップ" else text
 
         # ① まず返信して処理中を知らせる
