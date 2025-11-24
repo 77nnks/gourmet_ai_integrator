@@ -217,28 +217,19 @@ def handle_postback(event):
     if data.startswith("SELECT_PLACE|"):
         _, place_id = data.split("|")
 
-        details = get_place_details(place_id)
-        summary = summarize_reviews(details.get("reviews", []))
-        tags = classify_tags(details["name"], details.get("types", []), summary)
-        store_type = infer_store_type(details.get("types", []), summary)
-        recs = infer_recommendation(details.get("types", []), summary, details["name"])
-
-        user_state[user_id] = {
-            "mode": "await_save",
-            "place_id": place_id,
-            "details": details,
-            "summary": summary,
-            "tags": tags,
-            "store_type": store_type,
-            "recs": recs,
-        }
-
-        flex = build_store_info_flex(details, summary, tags, store_type, recs, place_id)
+        # （1）まず返信して「処理中」を表示
         line_bot_api.reply_message(
             event.reply_token,
-            FlexSendMessage(alt_text="店舗情報", contents=flex)
+            TextSendMessage(text="🔎 店舗情報を読み込み中だよ…ちょっとだけ待ってね!!")
         )
-        return
+
+        # （2）以降の処理は push で送るため user_id を使う
+        user_id = event.source.user_id
+
+        # 重たい処理は後で push_message で送るために非同期にする
+        process_store_selection_async(user_id, place_id)
+    
+        return  
 
     # ---- 保存（感想なし） ----
     if data.startswith("SAVE_NO_COMMENT|"):
@@ -261,7 +252,7 @@ def handle_postback(event):
         user_state.pop(user_id, None)
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("了解しました。また別のお店を検索してくださいね！")
+            TextSendMessage("了解！また別のお店を検索してね！")
         )
         return
 
@@ -271,7 +262,7 @@ def handle_postback(event):
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("📝 感想を入力してください。\n不要なら「スキップ」と送ってください。")
+            TextSendMessage("📝 感想を入力してください！\n不要なら「スキップ」と送ってね！")
         )
         return
 
@@ -311,7 +302,7 @@ def handle_text_message(event):
     if not candidates:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("❌ 店舗が見つかりませんでした。")
+            TextSendMessage("❌ 店舗が見つかりませんでした！")
         )
         return
 
@@ -321,6 +312,34 @@ def handle_text_message(event):
         FlexSendMessage(alt_text="候補一覧", contents=flex)
     )
 
+
+def process_store_selection_async(user_id, place_id):
+    # 情報取得 & AI解析
+    details = get_place_details(place_id)
+    summary = summarize_reviews(details.get("reviews", []))
+    tags = classify_tags(details["name"], details.get("types", []), summary)
+    store_type = infer_store_type(details.get("types", []), summary)
+    recs = infer_recommendation(details.get("types", []), summary, details["name"])
+
+    # 状態保存
+    user_state[user_id] = {
+        "mode": "await_save",
+        "place_id": place_id,
+        "details": details,
+        "summary": summary,
+        "tags": tags,
+        "store_type": store_type,
+        "recs": recs,
+    }
+
+    # Flexを作る
+    flex = build_store_info_flex(details, summary, tags, store_type, recs, place_id)
+
+    # （3）pushで最終結果を送信
+    line_bot_api.push_message(
+        user_id,
+        FlexSendMessage(alt_text="店舗情報", contents=flex)
+    )
 
 # ======================
 # LINE Webhook エンドポイント
