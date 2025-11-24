@@ -1,6 +1,7 @@
 # bot_line/line_bot.py
 import os
 import json
+import threading
 from flask import Flask, request, abort
 
 from linebot import LineBotApi, WebhookHandler
@@ -216,20 +217,20 @@ def handle_postback(event):
     # ---- 店選択 ----
     if data.startswith("SELECT_PLACE|"):
         _, place_id = data.split("|")
-
-        # （1）まず返信して「処理中」を表示
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="🔎 店舗情報を読み込み中だよ…ちょっとだけ待ってね!!")
-        )
-
-        # （2）以降の処理は push で送るため user_id を使う
         user_id = event.source.user_id
 
-        # 重たい処理は後で push_message で送るために非同期にする
-        process_store_selection_async(user_id, place_id)
-    
-        return  
+        # （1）まず即返信（LINEはこれを待っている）
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="🔎 店舗情報を読み込み中…ちょっとだけ待ってね!!")
+        )
+
+        # （2）重たい処理はスレッドで別実行
+        threading.Thread(
+            target=process_store_selection_async,
+            args=(user_id, place_id)
+        ).start()
+        return
 
     # ---- 保存（感想なし） ----
     if data.startswith("SAVE_NO_COMMENT|"):
