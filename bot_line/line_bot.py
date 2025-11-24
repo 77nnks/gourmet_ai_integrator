@@ -234,17 +234,16 @@ def handle_postback(event):
     # ---- 保存（感想なし） ----
     if data.startswith("SAVE_NO_COMMENT|"):
         _, place_id = data.split("|")
-        state = user_state[user_id]
 
-        page_id = upsert_store(
-            state["details"], state["summary"],
-            state["tags"], state["store_type"],
-            state["recs"], ""
+        # ① まず「保存中…」を即返す
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="💾 保存中だよ… 少しだけ待ってね💗")
         )
-        url = build_page_url(page_id)
 
-        user_state.pop(user_id, None)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(f"保存しました！\n{url}"))
+        # ② 処理は push_message 側で実行
+        user_id = event.source.user_id
+        process_save_no_comment_async(user_id)
         return
 
     # ---- 保存しない ----
@@ -276,43 +275,59 @@ def handle_text_message(event):
     text = event.message.text.strip()
 
     # ---- 感想入力 ----
-    if user_id in user_state and user_state[user_id]["mode"] == "waiting_comment":
-
-        state = user_state[user_id]
+    if user_state[user_id]["mode"] == "waiting_comment":
         comment = "" if text.lower() == "スキップ" else text
 
-        page_id = upsert_store(
-            state["details"], state["summary"],
-            state["tags"], state["store_type"],
-            state["recs"], comment
-        )
-        url = build_page_url(page_id)
-
-        user_state.pop(user_id, None)
+        # ① まず返信して処理中を知らせる
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(f"保存しました！\n{url}")
+            TextSendMessage("📝 保存処理中だよ… ちょっと待っててね!!")
         )
+
+        # ② 保存は push_message で送る
+        process_save_with_comment_async(user_id, comment)
         return
 
-    # ---- 通常検索 ----
+    # ---------------------
+    # ここから通常検索モード
+    # ---------------------
     user_state.pop(user_id, None)
 
-    candidates = search_candidates(text)
+    query = text
+
+    # ① まず返信して「処理中…」メッセージを送る（瞬時に表示される）
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text="🔎 店舗を探しているよ…少々お待ちください!!")
+    )
+    
+    # ② 検索処理は push_message で実行する
+    process_candidate_search_async(user_id, query)
+
+
+# ======================
+# 店舗名から候補一覧検索（Google検索 → Flex生成 → push_message）
+# ======================
+def process_candidate_search_async(user_id, query):
+    candidates = search_candidates(query)
+
     if not candidates:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("❌ 店舗が見つかりませんでした！")
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text="❌ 店舗が見つからなかったよ…もう一度試してね！")
         )
         return
 
     flex = build_candidates_flex(candidates)
-    line_bot_api.reply_message(
-        event.reply_token,
+
+    line_bot_api.push_message(
+        user_id,
         FlexSendMessage(alt_text="候補一覧", contents=flex)
     )
 
-
+# ======================
+# 店舗選択後の本処理（AI解析 → Flex生成 → push_message）
+# ======================
 def process_store_selection_async(user_id, place_id):
     # 情報取得 & AI解析
     details = get_place_details(place_id)
@@ -340,6 +355,55 @@ def process_store_selection_async(user_id, place_id):
         user_id,
         FlexSendMessage(alt_text="店舗情報", contents=flex)
     )
+    
+    
+# ======================
+# コメントなし保存処理（Notion保存 → push_message）
+# ======================
+def process_save_no_comment_async(user_id):
+    state = user_state.get(user_id)
+    if not state:
+        return
+
+    page_id = upsert_store(
+        state["details"], state["summary"],
+        state["tags"], state["store_type"],
+        state["recs"], ""
+    )
+
+    notion_url = build_page_url(page_id)
+
+    # ③ push_message で結果を送る
+    line_bot_api.push_message(
+        user_id,
+        TextSendMessage(text=f"✔ 保存が完了しました！\n{notion_url}")
+    )
+
+    # 状態クリア
+    user_state.pop(user_id, None)
+
+
+# ======================
+# コメントあり保存処理（Notion保存 → push_message）
+# ======================
+def process_save_with_comment_async(user_id, comment):
+    state = user_state[user_id]
+
+    page_id = upsert_store(
+        state["details"], state["summary"],
+        state["tags"], state["store_type"],
+        state["recs"], comment,
+    )
+
+    url = build_page_url(page_id)
+
+    # push で結果を送信
+    line_bot_api.push_message(
+        user_id,
+        TextSendMessage(text=f"✔ コメント付きで保存したよ！\n{url}")
+    )
+
+    user_state.pop(user_id, None)
 
 # ======================
 # LINE Webhook エンドポイント
