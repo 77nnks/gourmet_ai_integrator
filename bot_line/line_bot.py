@@ -240,15 +240,6 @@ def handle_postback(event):
         )
         return
 
-    # ---- 保存しない ----
-    if data.startswith("SAVE_NO"):
-        user_state.pop(user_id, None)
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("了解しました。また別のお店を検索してくださいね！")
-        )
-        return
-
     # ---- 保存（感想なし） ----
     if data.startswith("SAVE_NO_COMMENT|"):
         _, place_id = data.split("|")
@@ -263,6 +254,15 @@ def handle_postback(event):
 
         user_state.pop(user_id, None)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(f"保存しました！\n{url}"))
+        return
+
+    # ---- 保存しない ----
+    if data.startswith("SAVE_NO"):
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("了解しました。また別のお店を検索してくださいね！")
+        )
         return
 
     # ---- 感想あり保存モードへ ----
