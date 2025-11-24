@@ -210,7 +210,7 @@ def handle_postback(event):
         user_state.pop(user_id, None)
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("キャンセルしました。別のお店名を入力してください！")
+            TextSendMessage("キャンセルしました！また別のお店を検索してね！")
         )
         return
 
@@ -222,7 +222,7 @@ def handle_postback(event):
         # （1）まず即返信（LINEはこれを待っている）
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="🔎 店舗情報を読み込み中…ちょっとだけ待ってね!!")
+            TextSendMessage(text="🔎 店舗情報を読み込み中…少々お待ちください!!")
         )
 
         # （2）重たい処理はスレッドで別実行
@@ -239,7 +239,7 @@ def handle_postback(event):
         # ① まず「保存中…」を即返す
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="💾 保存中だよ… 少しだけ待ってね💗")
+            TextSendMessage(text="📝 保存処理中…少々お待ちください!!")
         )
 
         # ② 処理は push_message 側で実行
@@ -282,7 +282,7 @@ def handle_text_message(event):
         # ① まず返信して処理中を知らせる
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("📝 保存処理中だよ… ちょっと待っててね!!")
+            TextSendMessage("📝 保存処理中…少々お待ちください!!")
         )
 
         # ② 保存は push_message で送る
@@ -299,7 +299,7 @@ def handle_text_message(event):
     # ① まず返信して「処理中…」メッセージを送る（瞬時に表示される）
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text="🔎 店舗を探しているよ…少々お待ちください!!")
+        TextSendMessage(text="🔎 店舗検索中…少々お待ちください!!")
     )
     
     # ② 検索処理は push_message で実行する
