@@ -2,7 +2,9 @@
 import os
 import json
 import threading
+import math
 from flask import Flask, request, abort
+from linebot.models import LocationMessage
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import (
@@ -285,6 +287,21 @@ def handle_text_message(event):
             TextSendMessage("🔍 店名で検索するよ！\n調べたいお店の名前を送ってね。")
         )
         return
+    
+    # ===========================================
+    # 📍近くのおすすめ（リッチメニュー）
+    # ===========================================
+    if text.startswith("📍近くのおすすめ"):
+        user_state[user_id] = {"mode": "recommend"}
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                "📍 おすすめ検索モードだよ！\n"
+                "まず『位置情報』を送ってね。\n"
+                "（＋ → 位置情報 → 現在地 を送信）"
+            )
+        )
+        return
 
     # ===========================================
     # ② 感想入力モード（SAVE_WITH_COMMENT）
@@ -321,6 +338,41 @@ def handle_text_message(event):
         # 検索後はモードクリア（次の動作のため）
         user_state.pop(user_id, None)
         return
+    
+    # ===========================================
+    # おすすめ検索：シチュエーション受信
+    # ===========================================
+    if user_state.get(user_id, {}).get("mode") == "recommend":
+        state = user_state[user_id]
+
+        # 位置情報がまだの場合
+        if "lat" not in state:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(
+                    "📍 まず位置情報を送ってね！\n"
+                    "（＋ → 位置情報 → 現在地）"
+                )
+            )
+            return
+
+        # シチュエーションを保存
+        situation = text
+        user_state[user_id]["situation"] = situation
+
+        # 即時応答
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔎 おすすめ店舗を検索中…少々お待ちください！")
+        )
+
+        # 非同期処理
+        threading.Thread(
+            target=process_recommend_search_async,
+            args=(user_id,)
+        ).start()
+        return
+
 
     # ===========================================
     # ④ モードがない場合 → 既存処理（店名検索として扱う）
@@ -438,6 +490,198 @@ def process_save_with_comment_async(user_id, comment):
     )
 
     user_state.pop(user_id, None)
+
+
+# ======================
+# 位置情報の受信ハンドラー
+# ======================
+@handler.add(MessageEvent, message=LocationMessage)
+def handle_location(event):
+    user_id = event.source.user_id
+
+    lat = event.message.latitude
+    lng = event.message.longitude
+
+    # おすすめ検索モードでのみ受付
+    if user_state.get(user_id, {}).get("mode") != "recommend":
+        return
+
+    # 位置情報保存
+    user_state[user_id]["lat"] = lat
+    user_state[user_id]["lng"] = lng
+
+    # 次はシチュエーション入力
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(
+            "📌 位置情報ありがとう！\n"
+            "次にシチュエーションを教えてね。\n"
+            "例：デート / 静か / 一人 / 友達 / 作業 など"
+        )
+    )
+    
+# ======================
+# おすすめ検索本体（Google検索 → AI解析 → Flex生成 → push_message）
+# ======================
+def process_recommend_search_async(user_id):
+    state = user_state.get(user_id, {})
+    if not state:
+        return
+
+    lat = state["lat"]
+    lng = state["lng"]
+    situation = state["situation"]
+
+    # ① Google Places で近くの店を検索（例：半径500m）
+    nearby = search_candidates(f"{lat},{lng}", use_location=True)
+
+    if not nearby:
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage("❌ 近くにおすすめできる店舗が見つからなかったよ…")
+        )
+        return
+
+    ranked = []
+
+    # ② 各店の詳細と推論
+    for c in nearby[:5]:  # とりあえず5件だけ解析
+        details = get_place_details(c["place_id"])
+
+        # GPT推論
+        summary = summarize_reviews(details.get("reviews", []))
+        tags = classify_tags(details["name"], details.get("types", []), summary)
+        store_type = infer_store_type(details.get("types", []), summary)
+        recs = infer_recommendation(details.get("types", []), summary, details["name"])
+
+        # ③ Notion 保存（初回のみ）
+        upsert_store(details, summary, tags, store_type, recs, "")
+
+        # ④ スコア計算（簡易版）
+        score = calc_recommend_score(details, store_type, tags, lat, lng, situation)
+
+        ranked.append((score, details, tags, store_type, recs))
+
+    # スコア順に並べる
+    ranked.sort(reverse=True, key=lambda x: x[0])
+
+    # ⑤ 上位3件を Flex Message で返す
+    bubbles = []
+    for _, details, tags, store_type, recs in ranked[:3]:
+        bubble = build_store_info_flex(
+            details, summary, tags, store_type, recs, details["place_id"]
+        )
+        bubbles.append(bubble)
+
+    line_bot_api.push_message(
+        user_id,
+        FlexSendMessage(
+            alt_text="おすすめ店舗",
+            contents={"type": "carousel", "contents": bubbles}
+        )
+    )
+
+    # モードクリア
+    user_state.pop(user_id, None)
+    
+    import math
+
+# ======================
+# スコア計算関数
+# ======================
+def calc_recommend_score(details, store_type, tags, user_lat, user_lng, situation):
+    """
+    details: get_place_details() の返却値
+    store_type: infer_store_type() の返却値 { "type": "cafe", "subtype": "date" ... }
+    tags: classify_tags() の返却値（リスト）
+    user_lat, user_lng: ユーザー現在地
+    situation: "デート" / "一人" / "静か" / "友達" / "作業" など
+    """
+
+    # ===============
+    # ① Google評価 (0〜100)
+    # ===============
+    rating = details.get("rating", 0)  # 0〜5
+    google_score = rating * 20         # 0〜100
+
+    # ===============
+    # ② 距離スコア (0〜100)
+    # ===============
+    lat = details["geometry"]["location"]["lat"]
+    lng = details["geometry"]["location"]["lng"]
+
+    # 距離（メートル）
+    d = haversine_distance(user_lat, user_lng, lat, lng)
+
+    if d <= 100:
+        distance_score = 100
+    elif d <= 300:
+        distance_score = 80
+    elif d <= 600:
+        distance_score = 60
+    elif d <= 1000:
+        distance_score = 40
+    else:
+        distance_score = max(15, 10000 / d)
+
+    # ===============
+    # ③ シチュエーション適性スコア (0〜100)
+    # ===============
+    # store_type["subtype"] に GPT の判定結果が入っている想定
+    subtype = store_type.get("subtype", "")
+
+    situation_map = {
+        "デート": ["date", "romantic", "couple"],
+        "静か": ["quiet", "study", "relax"],
+        "作業": ["work", "study", "focus"],
+        "一人": ["solo", "casual", "quiet"],
+        "友達": ["friends", "group", "fun"]
+    }
+
+    if subtype in situation_map.get(situation, []):
+        situation_score = 100
+    else:
+        situation_score = 50 if situation in subtype else 30
+
+    # ===============
+    # ④ あなたの個人評価 (0〜100) → NotionDBの値があれば付与
+    # ===============
+    user_score_raw = details.get("user_rating", 0)
+    user_score = user_score_raw * 20  # 1〜5 → 20〜100
+
+    # ===============
+    # ⑤ 店タイプ一致スコア (0〜100)
+    # ===============
+    type_score = 100 if store_type.get("type") in tags else 50
+
+    # ===============
+    # ⑥ 最終スコア
+    # ===============
+    total_score = (
+        google_score * 0.40 +
+        situation_score * 0.30 +
+        distance_score * 0.15 +
+        user_score * 0.10 +
+        type_score * 0.05
+    )
+
+    return total_score
+
+# ======================
+# 距離計算関数
+# ======================
+def haversine_distance(lat1, lng1, lat2, lng2):
+    R = 6371000  # 地球の半径（メートル）
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lng2 - lng1)
+
+    a = math.sin(d_phi / 2)**2 + \
+        math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2)**2
+
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
 
 # ======================
 # LINE Webhook エンドポイント
