@@ -275,34 +275,67 @@ def handle_text_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # ---- 感想入力 ----
+    # ===========================================
+    # ① 🔍検索（リッチメニュー） → 検索モードに入る
+    # ===========================================
+    if text.startswith("🔍検索"):
+        user_state[user_id] = {"mode": "search"}
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔍 店名で検索するよ！\n調べたいお店の名前を送ってね。")
+        )
+        return
+
+    # ===========================================
+    # ② 感想入力モード（SAVE_WITH_COMMENT）
+    # ===========================================
     if user_id in user_state and user_state[user_id].get("mode") == "waiting_comment":
         comment = "" if text.lower() == "スキップ" else text
 
-        # ① まず返信して処理中を知らせる
+        # 即返信（LINEの制約）
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("📝 保存処理中…少々お待ちください!!")
         )
 
-        # ② 保存は push_message で送る
+        # 保存処理は非同期で実行
         process_save_with_comment_async(user_id, comment)
         return
 
-    # ---------------------
-    # ここから通常検索モード
-    # ---------------------
+    # ===========================================
+    # ③ 通常の店名検索（モード＝search のとき）
+    # ===========================================
+    if user_state.get(user_id, {}).get("mode") == "search":
+        # 店名テキストを検索として扱う
+        query = text
+
+        # 即返信
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔎 店舗検索中…少々お待ちください!!")
+        )
+
+        # 非同期検索
+        process_candidate_search_async(user_id, query)
+
+        # 検索後はモードクリア（次の動作のため）
+        user_state.pop(user_id, None)
+        return
+
+    # ===========================================
+    # ④ モードがない場合 → 既存処理（店名検索として扱う）
+    # ===========================================
     user_state.pop(user_id, None)
 
     query = text
 
-    # ① まず返信して「処理中…」メッセージを送る（瞬時に表示される）
+    # 即返信
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text="🔎 店舗検索中…少々お待ちください!!")
+        TextSendMessage("🔎 店舗検索中…少々お待ちください!!")
     )
-    
-    # ② 検索処理は push_message で実行する
+
+    # 非同期検索
     process_candidate_search_async(user_id, query)
 
 
