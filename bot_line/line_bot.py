@@ -207,12 +207,14 @@ def handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
 
-    # ---- キャンセル ----
-    if data == "CANCEL_SELECT":
+    # ===========================================
+    # 🔄【共通キャンセル処理】Postback版
+    # ===========================================
+    if data in ["CANCEL", "CANCEL_SELECT"]:
         user_state.pop(user_id, None)
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("キャンセルしました！また別のお店を検索してね！")
+            TextSendMessage("🔄 キャンセルしたよ！また気になるお店を教えてね💗")
         )
         return
 
@@ -278,6 +280,17 @@ def handle_text_message(event):
     text = event.message.text.strip()
 
     # ===========================================
+    # 🔄【共通キャンセル処理】Text版
+    # ===========================================
+    if text in ["キャンセル", "cancel", "やめる", "中止", "リセット"]:
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔄 キャンセルしたよ！またお店を検索してね💗")
+        )
+        return
+
+    # ===========================================
     # ① 🔍検索（リッチメニュー） → 検索モードに入る
     # ===========================================
     if text.startswith("🔍検索"):
@@ -306,7 +319,7 @@ def handle_text_message(event):
     # ===========================================
     # ② 感想入力モード（SAVE_WITH_COMMENT）
     # ===========================================
-    if user_id in user_state and user_state[user_id].get("mode") == "waiting_comment":
+    if user_state.get(user_id, {}).get("mode") == "waiting_comment":
         comment = "" if text.lower() == "スキップ" else text
 
         # 即返信（LINEの制約）
@@ -343,7 +356,7 @@ def handle_text_message(event):
     # おすすめ検索：シチュエーション受信
     # ===========================================
     if user_state.get(user_id, {}).get("mode") == "recommend":
-        state = user_state[user_id]
+        state = user_state.get(user_id, {})
 
         # 位置情報がまだの場合
         if "lat" not in state:
