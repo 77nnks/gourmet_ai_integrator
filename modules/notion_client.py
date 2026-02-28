@@ -42,13 +42,45 @@ def find_page_by_place_id(place_id: str) -> Optional[str]:
     }
 
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
-    res = requests.post(url, headers=_headers(), data=json.dumps(query)).json()
+    res = requests.post(url, headers=_headers(), data=json.dumps(query))
 
-    results = res.get("results", [])
+    if res.status_code != 200:
+        print(f"[Notion Error] find_page_by_place_id: HTTP {res.status_code}: {res.text}")
+        return None
+
+    results = res.json().get("results", [])
     if not results:
         return None
 
     return results[0]["id"]
+
+
+# -----------------------------------------------
+# 全件取得（ページネーション対応）
+# -----------------------------------------------
+def fetch_all_entries() -> list:
+    """Notion DB の全店舗データをページネーションで全件取得する"""
+
+    url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
+    results = []
+    payload = {}
+
+    while True:
+        res = requests.post(url, headers=_headers(), data=json.dumps(payload))
+
+        if res.status_code != 200:
+            print(f"[Notion Error] fetch_all_entries: HTTP {res.status_code}: {res.text}")
+            break
+
+        data = res.json()
+        results.extend(data.get("results", []))
+
+        if not data.get("has_more"):
+            break
+
+        payload = {"start_cursor": data.get("next_cursor")}
+
+    return results
 
 
 # -----------------------------------------------
@@ -107,8 +139,11 @@ def upsert_store(
     if page_id:
         url = f"https://api.notion.com/v1/pages/{page_id}"
         body = {"properties": props}
+        res = requests.patch(url, headers=_headers(), data=json.dumps(body))
 
-        requests.patch(url, headers=_headers(), data=json.dumps(body))
+        if res.status_code != 200:
+            print(f"[Notion Error] update page: HTTP {res.status_code}: {res.text}")
+
         return page_id
 
     # --------- 新規作成 ---------
@@ -121,6 +156,9 @@ def upsert_store(
         "https://api.notion.com/v1/pages",
         headers=_headers(),
         data=json.dumps(create_body)
-    ).json()
+    )
 
-    return res["id"]
+    if res.status_code != 200:
+        print(f"[Notion Error] create page: HTTP {res.status_code}: {res.text}")
+
+    return res.json()["id"]

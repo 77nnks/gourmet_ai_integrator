@@ -1,6 +1,5 @@
 # bot_line/line_bot.py
 import os
-import json
 import threading
 import math
 from flask import Flask, request, abort
@@ -14,12 +13,12 @@ from linebot.models import (
 
 # 共通モジュール
 from modules import (
-    search_candidates, get_place_details,
+    search_candidates, search_nearby, get_place_details,
     summarize_reviews, infer_store_type,
     infer_recommendation, classify_tags,
     upsert_store, build_page_url,
     build_photo_url, TYPE_ICON, SUBTYPE_ICON,
-    build_rating_stars
+    build_rating_stars, calc_distance,
 )
 
 app = Flask(__name__)
@@ -130,8 +129,6 @@ def build_store_info_flex(details, summary, tags, store_type, recs, place_id):
     photos = details.get("photos")
     if photos:
         photo_url = build_photo_url(photos[0].get("photo_reference"))
-    else:
-       photo_url = None
 
     bubble = {
         "type": "bubble",
@@ -221,7 +218,6 @@ def handle_postback(event):
     # ---- 店選択 ----
     if data.startswith("SELECT_PLACE|"):
         _, place_id = data.split("|")
-        user_id = event.source.user_id
 
         # （1）まず即返信（LINEはこれを待っている）
         line_bot_api.reply_message(
@@ -238,17 +234,17 @@ def handle_postback(event):
 
     # ---- 保存（感想なし） ----
     if data.startswith("SAVE_NO_COMMENT|"):
-        _, place_id = data.split("|")
-
         # ① まず「保存中…」を即返す
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="📝 保存処理中…少々お待ちください!!")
         )
 
-        # ② 処理は push_message 側で実行
-        user_id = event.source.user_id
-        process_save_no_comment_async(user_id)
+        # ② 処理はスレッドで実行（タイムアウト防止）
+        threading.Thread(
+            target=process_save_no_comment_async,
+            args=(user_id,)
+        ).start()
         return
 
     # ---- 保存しない ----
@@ -262,6 +258,14 @@ def handle_postback(event):
 
     # ---- 感想あり保存モードへ ----
     if data.startswith("SAVE_WITH_COMMENT|"):
+        # セッションが切れている場合の安全チェック
+        if user_id not in user_state:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("❌ セッションが切れています。もう一度検索してください。")
+            )
+            return
+
         user_state[user_id]["mode"] = "waiting_comment"
 
         line_bot_api.reply_message(
@@ -300,7 +304,7 @@ def handle_text_message(event):
             TextSendMessage("🔍 店名で検索するよ！\n調べたいお店の名前を送ってね。")
         )
         return
-    
+
     # ===========================================
     # 📍近くのおすすめ（リッチメニュー）
     # ===========================================
@@ -329,14 +333,16 @@ def handle_text_message(event):
         )
 
         # 保存処理は非同期で実行
-        process_save_with_comment_async(user_id, comment)
+        threading.Thread(
+            target=process_save_with_comment_async,
+            args=(user_id, comment)
+        ).start()
         return
 
     # ===========================================
     # ③ 通常の店名検索（モード＝search のとき）
     # ===========================================
     if user_state.get(user_id, {}).get("mode") == "search":
-        # 店名テキストを検索として扱う
         query = text
 
         # 即返信
@@ -346,12 +352,15 @@ def handle_text_message(event):
         )
 
         # 非同期検索
-        process_candidate_search_async(user_id, query)
+        threading.Thread(
+            target=process_candidate_search_async,
+            args=(user_id, query)
+        ).start()
 
         # 検索後はモードクリア（次の動作のため）
         user_state.pop(user_id, None)
         return
-    
+
     # ===========================================
     # おすすめ検索：シチュエーション受信
     # ===========================================
@@ -386,7 +395,6 @@ def handle_text_message(event):
         ).start()
         return
 
-
     # ===========================================
     # ④ モードがない場合 → 既存処理（店名検索として扱う）
     # ===========================================
@@ -401,7 +409,10 @@ def handle_text_message(event):
     )
 
     # 非同期検索
-    process_candidate_search_async(user_id, query)
+    threading.Thread(
+        target=process_candidate_search_async,
+        args=(user_id, query)
+    ).start()
 
 
 # ======================
@@ -449,13 +460,13 @@ def process_store_selection_async(user_id, place_id):
     # Flexを作る
     flex = build_store_info_flex(details, summary, tags, store_type, recs, place_id)
 
-    # （3）pushで最終結果を送信
+    # pushで最終結果を送信
     line_bot_api.push_message(
         user_id,
         FlexSendMessage(alt_text="店舗情報", contents=flex)
     )
-    
-    
+
+
 # ======================
 # コメントなし保存処理（Notion保存 → push_message）
 # ======================
@@ -472,7 +483,6 @@ def process_save_no_comment_async(user_id):
 
     notion_url = build_page_url(page_id)
 
-    # ③ push_message で結果を送る
     line_bot_api.push_message(
         user_id,
         TextSendMessage(text=f"✔ 保存が完了しました！\n{notion_url}")
@@ -486,7 +496,9 @@ def process_save_no_comment_async(user_id):
 # コメントあり保存処理（Notion保存 → push_message）
 # ======================
 def process_save_with_comment_async(user_id, comment):
-    state = user_state[user_id]
+    state = user_state.get(user_id)
+    if not state:
+        return
 
     page_id = upsert_store(
         state["details"], state["summary"],
@@ -496,7 +508,6 @@ def process_save_with_comment_async(user_id, comment):
 
     url = build_page_url(page_id)
 
-    # push で結果を送信
     line_bot_api.push_message(
         user_id,
         TextSendMessage(text=f"✔ コメント付きで保存したよ！\n{url}")
@@ -532,9 +543,10 @@ def handle_location(event):
             "例：デート / 静か / 一人 / 友達 / 作業 など"
         )
     )
-    
+
+
 # ======================
-# おすすめ検索本体（Google検索 → AI解析 → Flex生成 → push_message）
+# おすすめ検索本体（Nearby Search → AI解析 → Flex生成 → push_message）
 # ======================
 def process_recommend_search_async(user_id):
     state = user_state.get(user_id, {})
@@ -545,10 +557,10 @@ def process_recommend_search_async(user_id):
     lng = state["lng"]
     situation = state["situation"]
 
-    # ① Google Places で近くの店を検索（例：半径500m）
-    nearby = search_candidates(f"{lat},{lng}", use_location=True)
+    # ① Google Places Nearby Search で近くの店を検索（半径500m）
+    nearby_candidates = search_nearby(lat, lng, radius=500)
 
-    if not nearby:
+    if not nearby_candidates:
         line_bot_api.push_message(
             user_id,
             TextSendMessage("❌ 近くにおすすめできる店舗が見つからなかったよ…")
@@ -557,8 +569,8 @@ def process_recommend_search_async(user_id):
 
     ranked = []
 
-    # ② 各店の詳細と推論
-    for c in nearby[:5]:  # とりあえず5件だけ解析
+    # ② 各店の詳細と推論（上位5件のみ）
+    for c in nearby_candidates[:5]:
         details = get_place_details(c["place_id"])
 
         # GPT推論
@@ -570,17 +582,18 @@ def process_recommend_search_async(user_id):
         # ③ Notion 保存（初回のみ）
         upsert_store(details, summary, tags, store_type, recs, "")
 
-        # ④ スコア計算（簡易版）
+        # ④ スコア計算
         score = calc_recommend_score(details, store_type, tags, lat, lng, situation)
 
-        ranked.append((score, details, tags, store_type, recs))
+        # summaryもタプルに含めて使い回しを防ぐ（バグ修正）
+        ranked.append((score, details, summary, tags, store_type, recs))
 
     # スコア順に並べる
     ranked.sort(reverse=True, key=lambda x: x[0])
 
     # ⑤ 上位3件を Flex Message で返す
     bubbles = []
-    for _, details, tags, store_type, recs in ranked[:3]:
+    for _, details, summary, tags, store_type, recs in ranked[:3]:
         bubble = build_store_info_flex(
             details, summary, tags, store_type, recs, details["place_id"]
         )
@@ -596,8 +609,7 @@ def process_recommend_search_async(user_id):
 
     # モードクリア
     user_state.pop(user_id, None)
-    
-    import math
+
 
 # ======================
 # スコア計算関数
@@ -623,8 +635,8 @@ def calc_recommend_score(details, store_type, tags, user_lat, user_lng, situatio
     lat = details["geometry"]["location"]["lat"]
     lng = details["geometry"]["location"]["lng"]
 
-    # 距離（メートル）
-    d = haversine_distance(user_lat, user_lng, lat, lng)
+    # calc_distance は km を返すので ×1000 でメートルに変換（utils.py の重複実装を排除）
+    d = calc_distance(user_lat, user_lng, lat, lng) * 1000
 
     if d <= 100:
         distance_score = 100
@@ -640,7 +652,6 @@ def calc_recommend_score(details, store_type, tags, user_lat, user_lng, situatio
     # ===============
     # ③ シチュエーション適性スコア (0〜100)
     # ===============
-    # store_type["subtype"] に GPT の判定結果が入っている想定
     subtype = store_type.get("subtype", "")
 
     situation_map = {
@@ -679,21 +690,6 @@ def calc_recommend_score(details, store_type, tags, user_lat, user_lng, situatio
     )
 
     return total_score
-
-# ======================
-# 距離計算関数
-# ======================
-def haversine_distance(lat1, lng1, lat2, lng2):
-    R = 6371000  # 地球の半径（メートル）
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    d_phi = math.radians(lat2 - lat1)
-    d_lambda = math.radians(lng2 - lng1)
-
-    a = math.sin(d_phi / 2)**2 + \
-        math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2)**2
-
-    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 
 # ======================
