@@ -1,264 +1,264 @@
 # CLAUDE.md — Gourmet AI Integrator
 
-This file provides guidance for AI assistants (Claude and others) working in this codebase.
+このファイルは、このコードベースで作業するAIアシスタント（Claudeなど）向けのガイドを提供します。
 
 ---
 
-## Project Overview
+## プロジェクト概要
 
-**Gourmet AI Integrator** is a multi-platform restaurant discovery and management bot that integrates:
+**Gourmet AI Integrator** は、以下を統合したマルチプラットフォームのレストラン発見・管理ボットです：
 
-- **Discord** and **LINE** chat interfaces
-- **Google Places API** for restaurant data
-- **OpenAI GPT-4o-mini** for AI-powered analysis and enrichment
-- **Notion** as a persistent restaurant database
+- **Discord** と **LINE** のチャットインターフェース
+- **Google Places API** によるレストランデータ取得
+- **OpenAI GPT-4o-mini** によるAI分析・情報補完
+- **Notion** による永続的なレストランデータベース
 
-Users can search for restaurants, get AI-generated summaries and tags, save records to Notion, and get location-based recommendations — all from within Discord or LINE.
+ユーザーはDiscordまたはLINE上でレストランを検索し、AI生成のサマリーやタグを取得してNotionに保存、位置情報に基づいたおすすめを受け取ることができます。
 
 ---
 
-## Repository Structure
+## リポジトリ構成
 
 ```
 gourmet_ai_integrator/
-├── main.py                    # Entry point: starts Discord (thread) + LINE (Flask)
-├── Procfile                   # Deployment config (Railway/Heroku): `web: python main.py`
-├── requirements.txt           # Python dependencies (no pinned versions)
+├── main.py                    # エントリーポイント：Discord（スレッド）+ LINE（Flask）を起動
+├── Procfile                   # デプロイ設定（Railway/Heroku）: `web: python main.py`
+├── requirements.txt           # Pythonの依存パッケージ（バージョン未固定）
 │
 ├── bot_discord/
-│   └── discord_bot.py         # Discord slash command bot (266 lines)
+│   └── discord_bot.py         # Discordスラッシュコマンドボット（266行）
 │
 ├── bot_line/
-│   └── line_bot.py            # LINE webhook Flask server (725 lines)
+│   └── line_bot.py            # LINE Webhook用 Flaskサーバー（725行）
 │
 └── modules/
-    ├── __init__.py             # Barrel exports for module functions
-    ├── ai_processing.py        # OpenAI GPT-4o-mini wrappers
-    ├── google_api.py           # Google Places / Geocoding API calls
-    ├── notion_client.py        # Notion database CRUD operations
-    └── utils.py                # Shared helpers (icons, distance, formatting)
+    ├── __init__.py             # モジュール関数のバレルエクスポート
+    ├── ai_processing.py        # OpenAI GPT-4o-mini ラッパー
+    ├── google_api.py           # Google Places / Geocoding API呼び出し
+    ├── notion_client.py        # Notion データベース CRUD 操作
+    └── utils.py                # 共有ヘルパー（アイコン、距離計算、フォーマット）
 ```
 
 ---
 
-## Architecture
+## アーキテクチャ
 
-### Startup Flow (`main.py`)
+### 起動フロー（`main.py`）
 
-1. Discord bot is started in a **daemon thread** (`start_discord_bot()`)
-2. LINE Flask app runs on the **main thread** (port from `PORT` env var, default `8080`)
-3. Both bots share the same `modules/` layer
+1. Discordボットを**デーモンスレッド**で起動（`start_discord_bot()`）
+2. LINE Flask アプリを**メインスレッド**で起動（ポートは`PORT`環境変数、デフォルト`8080`）
+3. 両ボットは同じ `modules/` レイヤーを共有
 
-### Module Responsibilities
+### モジュールの責務
 
-| Module | Responsibility |
+| モジュール | 責務 |
 |---|---|
-| `ai_processing.py` | All OpenAI API calls; returns structured JSON |
-| `google_api.py` | Google Places TextSearch + Details; Geocoding |
-| `notion_client.py` | Notion database read/write (upsert by `place_id`) |
-| `utils.py` | Photo URLs, store-type icons, rating stars, price text, Haversine distance |
+| `ai_processing.py` | 全OpenAI API呼び出し。構造化JSONを返す |
+| `google_api.py` | Google Places テキスト検索・詳細取得、Geocoding |
+| `notion_client.py` | Notionデータベースの読み書き（`place_id`でupsert） |
+| `utils.py` | 写真URL生成、店舗タイプアイコン、評価星表示、料金テキスト、Haversine距離計算 |
 
-### Data Flow (Save a Restaurant)
+### データフロー（レストランを保存する場合）
 
 ```
-User command → Google Places search → Candidate selection
-    → Google Places Details → OpenAI analysis (summary, type, recs, tags)
-    → Notion upsert (by place_id to prevent duplicates)
-    → Confirmation message to user
+ユーザーコマンド → Google Places 検索 → 候補選択
+    → Google Places 詳細取得 → OpenAI 分析（サマリー・タイプ・おすすめ・タグ）
+    → Notion upsert（place_idで重複防止）
+    → ユーザーへ確認メッセージ
 ```
 
 ---
 
-## Key Features
+## 主要機能
 
-### Discord Bot (`bot_discord/discord_bot.py`)
+### Discord ボット（`bot_discord/discord_bot.py`）
 
-**Slash Commands:**
-- `/save <query> [comment]` — Search, AI-enrich, and save a restaurant to Notion
-- `/nearby <location> [conditions]` — Find saved restaurants near a location, scored by distance/rating/conditions
+**スラッシュコマンド：**
+- `/save <query> [comment]` — レストランを検索し、AI情報を付加してNotionに保存
+- `/nearby <location> [conditions]` — 指定場所の近くにある保存済みレストランを距離・評価・条件でスコアリングして表示
 
-**UI Patterns:**
-- Discord `app_commands` (slash commands)
-- `discord.ui.View` + `discord.ui.Button` for candidate selection
-- `discord.Embed` for rich result display
-- `interaction.response.defer()` to avoid timeout on long operations
+**UIパターン：**
+- Discord `app_commands`（スラッシュコマンド）
+- `discord.ui.View` + `discord.ui.Button` による候補選択UI
+- `discord.Embed` によるリッチな結果表示
+- 長時間処理のタイムアウト回避に `interaction.response.defer()` を使用
 
-### LINE Bot (`bot_line/line_bot.py`)
+### LINE ボット（`bot_line/line_bot.py`）
 
-**Conversation Modes (state machine per user):**
-- `search` — Text-based restaurant search
-- `recommend` — Location-based recommendation (accepts GPS coordinates)
-- `await_save` — Waiting for user to confirm save
-- `waiting_comment` — Waiting for optional comment before save
+**会話モード（ユーザーごとのステートマシン）：**
+- `search` — テキストによるレストラン検索
+- `recommend` — 位置情報ベースのおすすめ（GPS座標を受け付け）
+- `await_save` — ユーザーの保存確認待ち
+- `waiting_comment` — 保存前のコメント入力待ち
 
-**State management:**
+**状態管理：**
 ```python
-user_state = {}  # Dict keyed by user_id; stores mode and pending data
+user_state = {}  # user_idをキーとするDict。モードと保留中データを保持
 ```
 
-**UI Patterns:**
-- LINE Flex Messages (Bubble + Carousel) for rich layouts
-- Postback actions for button-driven state transitions
-- `push_message` in a thread for async response (prevents webhook timeout)
-- Location message support (GPS coordinates from LINE app)
+**UIパターン：**
+- LINE Flex Messages（Bubble + Carousel）によるリッチレイアウト
+- Postbackアクションによるボタン駆動の状態遷移
+- Webhookタイムアウト防止のため、スレッド内で `push_message` を使用
+- LINEアプリからのGPS座標（位置情報メッセージ）に対応
 
 ---
 
-## External Services & Required Environment Variables
+## 外部サービスと必要な環境変数
 
-All secrets are loaded via `python-dotenv` from a `.env` file (not committed to repo).
+全シークレットは `python-dotenv` でリポジトリ外の `.env` ファイルから読み込みます。
 
-| Variable | Service | Used In |
+| 変数名 | サービス | 使用ファイル |
 |---|---|---|
 | `GOOGLE_API_KEY` | Google Places + Geocoding | `google_api.py` |
 | `OPENAI_API_KEY` | OpenAI GPT-4o-mini | `ai_processing.py` |
 | `DISCORD_BOT_TOKEN` | Discord API | `discord_bot.py` |
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API | `line_bot.py` |
-| `LINE_CHANNEL_SECRET` | LINE webhook verification | `line_bot.py` |
+| `LINE_CHANNEL_SECRET` | LINE Webhook検証 | `line_bot.py` |
 | `NOTION_API_KEY` | Notion API | `notion_client.py` |
-| `MAIN_DATABASE_ID` | Notion database target | `notion_client.py` |
-| `PORT` | Flask server port | `main.py` (default: `8080`) |
+| `MAIN_DATABASE_ID` | Notionデータベース対象 | `notion_client.py` |
+| `PORT` | Flaskサーバーポート | `main.py`（デフォルト：`8080`） |
 
 ---
 
-## Notion Database Schema
+## Notion データベーススキーマ
 
-The Notion database (`MAIN_DATABASE_ID`) has the following property structure:
+Notionデータベース（`MAIN_DATABASE_ID`）は以下のプロパティ構造を持ちます：
 
-| Property Name (Japanese) | Type | Description |
+| プロパティ名 | 型 | 説明 |
 |---|---|---|
-| 店名 | Title | Restaurant name |
-| 住所 | Rich Text | Address |
-| 営業時間 | Rich Text | Business hours |
-| 感想 | Rich Text | User comment |
-| サブタイプ | Rich Text | Store subtype (AI-inferred) |
-| 印象 | Rich Text | AI-generated impression summary |
-| 評価 | Number | Google rating (0–5) |
-| 料金 | Number | Google price level (0–4) |
-| lat / lng | Number | Coordinates |
-| URL | URL | Google Maps URL |
-| 公式サイト | URL | Official website |
-| 店タイプ | Select | Store type (AI-inferred) |
-| Tags | Multi-select | AI-generated tags |
-| おすすめメニュー | Rich Text | AI-recommended dishes |
-| place_id | Rich Text | Google Place ID (used as unique key) |
+| 店名 | Title | レストラン名 |
+| 住所 | Rich Text | 住所 |
+| 営業時間 | Rich Text | 営業時間 |
+| 感想 | Rich Text | ユーザーコメント |
+| サブタイプ | Rich Text | 店舗サブタイプ（AI推定） |
+| 印象 | Rich Text | AIが生成した印象サマリー |
+| 評価 | Number | Googleの評価（0〜5） |
+| 料金 | Number | Googleの価格レベル（0〜4） |
+| lat / lng | Number | 緯度・経度座標 |
+| URL | URL | Google マップ URL |
+| 公式サイト | URL | 公式ウェブサイト |
+| 店タイプ | Select | 店舗タイプ（AI推定） |
+| Tags | Multi-select | AIが生成したタグ |
+| おすすめメニュー | Rich Text | AIが推薦するメニュー |
+| place_id | Rich Text | Google Place ID（ユニークキーとして使用） |
 
 ---
 
-## AI Processing (`ai_processing.py`)
+## AI処理（`ai_processing.py`）
 
-All OpenAI calls use `gpt-4o-mini` and force JSON output (`response_format={"type": "json_object"}`).
+全OpenAI呼び出しは `gpt-4o-mini` を使用し、JSON出力を強制します（`response_format={"type": "json_object"}`）。
 
-| Function | Input | Output (JSON keys) |
+| 関数 | 入力 | 出力（JSONキー） |
 |---|---|---|
-| `summarize_reviews(reviews)` | List of review texts | `positive`, `negative`, `conclusion` |
-| `infer_store_type(types, summary)` | Google types list + summary | `store_type`, `sub_type` |
-| `infer_recommendation(types, summary, name)` | Same + name | `recommendations` (list of 3) |
-| `classify_tags(name, types, summary)` | Same | `tags` (list of strings) |
+| `summarize_reviews(reviews)` | レビューテキストのリスト | `positive`, `negative`, `conclusion` |
+| `infer_store_type(types, summary)` | Google typesリスト + サマリー | `store_type`, `sub_type` |
+| `infer_recommendation(types, summary, name)` | 上記 + 店名 | `recommendations`（3件のリスト） |
+| `classify_tags(name, types, summary)` | 上記 | `tags`（文字列のリスト） |
 
-All functions have the pattern: build a prompt → call `_request_json(prompt)` → return parsed dict.
+全関数の共通パターン：プロンプトを構築 → `_request_json(prompt)` を呼び出す → パース済みdictを返す
 
 ---
 
-## Conventions and Patterns
+## 規約とパターン
 
-### Language
+### 言語使い分け
 
-- **UI strings**: Japanese (user-facing messages, Notion field names)
-- **Code**: English (function names, variable names, comments mostly in English)
-- **Emoji**: Used extensively in user-facing messages (📍, 🔍, 🍽️, ☕, 🍣, etc.)
+- **UIテキスト**：日本語（ユーザー向けメッセージ、Notionフィールド名）
+- **コード**：英語（関数名、変数名、コメントは主に英語）
+- **絵文字**：ユーザー向けメッセージで積極的に使用（📍, 🔍, 🍽️, ☕, 🍣 など）
 
-### Naming
+### 命名規則
 
-- Python snake_case for functions and variables
-- Module-level dicts for constants (icon maps, tag maps)
-- Private helpers prefixed with underscore: `_request_json`, `_headers`
+- 関数・変数は Python の `snake_case`
+- 定数はモジュールレベルのdict（アイコンマップ、タグマップなど）
+- プライベートヘルパーはアンダースコアプレフィックス：`_request_json`, `_headers`
 
-### Async / Threading
+### 非同期処理 / スレッディング
 
-- Discord: use `await interaction.response.defer()` before any long operation; then `interaction.followup.send()`
-- LINE: use `threading.Thread(target=...).start()` for operations that would exceed webhook timeout
-- Discord bot itself started as a daemon thread from `main.py`
+- Discord：長時間操作の前に `await interaction.response.defer()` を呼び出し、処理後に `interaction.followup.send()` を使用
+- LINE：Webhookタイムアウトを超える操作は `threading.Thread(target=...).start()` でバックグラウンド実行
+- Discordボット自体は `main.py` からデーモンスレッドとして起動
 
-### Error Handling
+### エラーハンドリング
 
-- API errors are caught at the bot layer and return user-friendly messages
-- `find_page_by_place_id` prevents Notion duplicate entries (idempotent upserts)
-- State cleanup on cancel commands: `user_state.pop(user_id, None)`
+- APIエラーはボットレイヤーでキャッチし、ユーザーフレンドリーなメッセージを返す
+- `find_page_by_place_id` でNotionの重複登録を防止（冪等なupsert）
+- キャンセルコマンド時の状態クリーンアップ：`user_state.pop(user_id, None)`
 
 ### Google Places
 
-- Search uses `language=ja` for Japanese results
-- Details request includes: `name`, `formatted_address`, `geometry`, `rating`, `opening_hours`, `price_level`, `reviews`, `types`, `url`, `website`, `photos`
-- Photos are fetched via `utils.get_photo_url(photo_reference, max_width=400)`
+- 検索は `language=ja`（日本語結果）を使用
+- 詳細取得に含まれるフィールド：`name`, `formatted_address`, `geometry`, `rating`, `opening_hours`, `price_level`, `reviews`, `types`, `url`, `website`, `photos`
+- 写真は `utils.get_photo_url(photo_reference, max_width=400)` で取得
 
 ---
 
-## Development Workflow
+## 開発ワークフロー
 
-### Running Locally
+### ローカル実行
 
-1. Copy `.env` with all required environment variables (see table above)
-2. Install dependencies:
+1. 必要な環境変数をすべて記載した `.env` を配置（上記テーブル参照）
+2. 依存パッケージをインストール：
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the application:
+3. アプリを起動：
    ```bash
    python main.py
    ```
-4. For LINE bot: expose local Flask server via ngrok or similar, then set webhook URL in LINE Developers console
+4. LINE ボットの場合：ngrokなどでローカルFlaskサーバーを公開し、LINE DevelopersコンソールでWebhook URLを設定
 
-### Deployment
+### デプロイ
 
-Deployed to **Railway** or **Heroku** via `Procfile`:
+`Procfile` により **Railway** または **Heroku** へデプロイ：
 ```
 web: python main.py
 ```
-- Set all environment variables in the platform dashboard
-- The LINE webhook URL must be publicly accessible
+- プラットフォームのダッシュボードで全環境変数を設定
+- LINE WebhookのURLは公開アクセス可能である必要がある
 
-### Adding New Features
+### 新機能を追加する場合
 
-- **New Discord command**: Add a new `@tree.command` in `discord_bot.py`; use `defer()` for long ops
-- **New LINE flow**: Add a new mode string to `user_state`, handle in the `handle_message` function
-- **New AI analysis**: Add a function to `ai_processing.py` following the `_request_json` pattern
-- **New Notion field**: Update the property dict in `notion_client.py` `upsert_store` function
+- **Discordコマンドを追加**：`discord_bot.py` に新しい `@tree.command` を追加し、長時間操作には `defer()` を使用
+- **LINEフローを追加**：`user_state` に新しいモード文字列を追加し、`handle_message` 関数でハンドリング
+- **AI分析を追加**：`ai_processing.py` に `_request_json` パターンに従った関数を追加
+- **Notionフィールドを追加**：`notion_client.py` の `upsert_store` 関数内のプロパティdictを更新
 
-### No Tests Currently
+### テストについて
 
-The project has no automated tests. When adding features:
-- Manually test via the respective chat interface
-- For Notion writes, verify entries in the Notion database directly
-- Consider adding `pytest` tests for pure functions in `utils.py` and `ai_processing.py`
-
----
-
-## Dependencies
-
-```
-Flask            # Web framework for LINE webhook
-line-bot-sdk     # LINE Messaging API client
-discord.py       # Discord bot framework
-requests         # HTTP client for Google/Notion APIs
-openai           # OpenAI API client
-python-dotenv    # .env file loading
-```
-
-Versions are **not pinned** in `requirements.txt`. Pin versions if reproducibility becomes important.
+現在、自動テストは存在しません。機能追加時は：
+- 各チャットインターフェースから手動テストを実施
+- Notion書き込みはNotionデータベースを直接確認
+- `utils.py` や `ai_processing.py` の純粋関数に対して `pytest` テストの追加を検討
 
 ---
 
-## Common Gotchas
+## 依存パッケージ
 
-1. **LINE webhook timeout**: LINE requires a response within 3 seconds. Long operations (AI + Notion writes) must be done in a background thread with `push_message` instead of `reply_message`.
+```
+Flask            # LINE Webhook用 Webフレームワーク
+line-bot-sdk     # LINE Messaging API クライアント
+discord.py       # Discord ボットフレームワーク
+requests         # Google/Notion API 用 HTTP クライアント
+openai           # OpenAI API クライアント
+python-dotenv    # .envファイルの読み込み
+```
 
-2. **Discord interaction timeout**: Must call `defer()` within ~3 seconds, then use `followup.send()` after processing.
+`requirements.txt` ではバージョンを**固定していません**。再現性が重要になった場合はバージョン固定を検討してください。
 
-3. **Notion duplicate prevention**: Always use `find_page_by_place_id` before saving — the upsert function handles insert vs update automatically.
+---
 
-4. **Google Places photo URL**: Photos require the API key in the URL. Use `utils.get_photo_url()` — do not construct URLs manually.
+## よくあるハマりポイント
 
-5. **PORT variable**: Railway/Heroku inject `PORT` dynamically. The default `8080` is for local dev only.
+1. **LINE Webhookタイムアウト**：LINEは3秒以内の応答を要求します。AI処理やNotion書き込みなどの長時間操作は `reply_message` ではなく `push_message` を使ってバックグラウンドスレッドで実行してください。
 
-6. **Japanese locale**: Google Places queries use `language=ja`. Changing this will affect AI analysis prompts which expect Japanese review text.
+2. **Discord インタラクションタイムアウト**：3秒以内に `defer()` を呼び出す必要があります。処理後は `followup.send()` を使用してください。
+
+3. **Notionの重複防止**：保存前には必ず `find_page_by_place_id` を使用してください。upsert関数が挿入か更新かを自動判定します。
+
+4. **Google Places 写真URL**：写真URLにはAPIキーが必要です。`utils.get_photo_url()` を使用し、URLを手動で構築しないでください。
+
+5. **PORT変数**：Railway/HerokuはPORTを動的に注入します。デフォルトの`8080`はローカル開発専用です。
+
+6. **日本語ロケール**：Google Placesのクエリは `language=ja` を使用しています。変更すると、日本語レビューテキストを前提としたAI分析プロンプトに影響します。
