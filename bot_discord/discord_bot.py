@@ -10,10 +10,7 @@ from modules import (
     search_candidates,
     get_place_details,
     geocode_address,
-    summarize_reviews,
-    infer_store_type,
-    infer_recommendation,
-    classify_tags,
+    analyze_store,
     upsert_store,
     build_page_url,
     fetch_all_entries,
@@ -74,10 +71,8 @@ async def process_save(interaction, place_id, comment):
 
     details = get_place_details(place_id)
 
-    summary = summarize_reviews(details.get("reviews", []))
-    tags = classify_tags(details["name"], details.get("types", []), summary)
-    store_type = infer_store_type(details.get("types", []), summary)
-    recs = infer_recommendation(details.get("types", []), summary, details["name"])
+    result = analyze_store(details["name"], details.get("types", []), details.get("reviews", []))
+    summary, tags, store_type, recs = result["summary"], result["tags"], result["store_type"], result["recs"]
 
     page_id = upsert_store(details, summary, tags, store_type, recs, comment)
     notion_url = build_page_url(page_id)

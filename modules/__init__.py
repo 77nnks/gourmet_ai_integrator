@@ -14,6 +14,7 @@ from modules.ai_processing import (
     infer_store_type,
     infer_recommendation,
     classify_tags,
+    analyze_store,
 )
 
 # --- Notion 連携 ---

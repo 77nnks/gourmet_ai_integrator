@@ -132,3 +132,50 @@ Google Types: {types}
 
     data = _request_json(prompt)
     return data.get("tags", [])
+
+
+# -----------------------------------------------
+# AI：一括分析（4項目を1回のAPIコールで取得）
+# -----------------------------------------------
+def analyze_store(name: str, types: list[str], reviews: list) -> dict:
+    """
+    口コミ・タイプ・店名から、サマリー・タグ・店タイプ・おすすめを1回のAPIコールで生成。
+    返却値: { "summary": str, "store_type": {"type": ..., "subtype": ...}, "recs": [...], "tags": [...] }
+    """
+    texts = [r.get("text", "") for r in reviews if r.get("text")]
+    joined = "\n".join(texts)
+
+    prompt = f"""
+以下の店情報を元に、JSON形式で全ての分析を一度に生成してください。
+
+店名: {name}
+Google Types: {types}
+口コミ:
+{joined}
+
+出力(JSON):
+{{
+  "positive": ["良い点1", "良い点2"],
+  "negative": ["気になる点1"],
+  "conclusion": "一言まとめ",
+  "store_type": "cafe",
+  "sub_type": "コーヒーとスイーツ",
+  "recommendations": ["メニュー1", "メニュー2", "メニュー3"],
+  "tags": ["デート向け", "落ち着いた", "カフェ"]
+}}
+"""
+
+    data = _request_json(prompt)
+
+    summary = "【良い点】\n"
+    summary += "\n".join([f"・{p}" for p in data.get("positive", [])])
+    summary += "\n\n【気になる点】\n"
+    summary += "\n".join([f"・{n}" for n in data.get("negative", [])])
+    summary += "\n\n【まとめ】\n" + data.get("conclusion", "")
+
+    return {
+        "summary": summary,
+        "store_type": {"type": data.get("store_type", ""), "subtype": data.get("sub_type", "")},
+        "recs": data.get("recommendations", []),
+        "tags": data.get("tags", []),
+    }

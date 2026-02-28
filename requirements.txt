@@ -1,6 +1,6 @@
-Flask
-line-bot-sdk
-discord.py
-requests
-openai
-python-dotenv
+Flask==3.1.3
+line-bot-sdk==3.22.0
+discord.py==2.7.0
+requests==2.32.5
+openai==2.24.0
+python-dotenv==1.2.1
