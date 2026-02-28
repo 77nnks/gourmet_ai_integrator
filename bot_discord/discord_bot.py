@@ -1,7 +1,6 @@
 # bot_discord/discord_bot.py
 
 import os
-import json
 import discord
 from discord import app_commands
 from discord.ui import Button, View
@@ -10,12 +9,14 @@ from discord.ui import Button, View
 from modules import (
     search_candidates,
     get_place_details,
+    geocode_address,
     summarize_reviews,
     infer_store_type,
     infer_recommendation,
     classify_tags,
     upsert_store,
     build_page_url,
+    fetch_all_entries,
     convert_price_level,
     calc_distance,
 )
@@ -147,57 +148,22 @@ async def save(interaction, query: str, comment: str | None = None):
 # --------------------------------------
 # /nearby コマンド
 # --------------------------------------
-def fetch_all_notion_entries():
-    """
-    全店舗データを Notion DB から取得
-    """
-    import requests
-
-    url = f"https://api.notion.com/v1/databases/{os.getenv('MAIN_DATABASE_ID')}/query"
-    headers = {
-        "Authorization": f"Bearer {os.getenv('NOTION_API_KEY')}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
-    }
-
-    results = []
-    payload = {}
-
-    while True:
-        r = requests.post(url, headers=headers, data=json.dumps(payload)).json()
-        results.extend(r.get("results", []))
-
-        if not r.get("has_more"):
-            break
-
-        payload = {"start_cursor": r.get("next_cursor")}
-
-    return results
-
-
 @bot.tree.command(name="nearby", description="近くのおすすめ店舗（距離＋タグ＋評価）")
 async def nearby(interaction, location: str, conditions: str = ""):
     await interaction.response.defer(ephemeral=False)
 
-    import requests
-
     cond_words = [c.lower() for c in conditions.split() if c.strip()]
 
-    # 住所 → 緯度経度
-    geo_url = (
-        "https://maps.googleapis.com/maps/api/geocode/json"
-        f"?address={location}&language=ja&key={os.getenv('GOOGLE_API_KEY')}"
-    )
-    geo_res = requests.get(geo_url).json()
-
-    if not geo_res.get("results"):
+    # 住所 → 緯度経度（google_api.geocode_address を使用）
+    loc = geocode_address(location)
+    if not loc:
         await interaction.followup.send("❌ 現在地を解析できません。")
         return
 
-    loc = geo_res["results"][0]["geometry"]["location"]
     lat0, lng0 = loc["lat"], loc["lng"]
 
-    entries = fetch_all_notion_entries()
+    # Notion 全件取得（notion_client.fetch_all_entries を使用）
+    entries = fetch_all_entries()
 
     scored = []
     for e in entries:
