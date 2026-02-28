@@ -2,6 +2,7 @@
 import os
 import threading
 import math
+import time
 from flask import Flask, request, abort
 from linebot.models import LocationMessage
 
@@ -14,8 +15,7 @@ from linebot.models import (
 # 共通モジュール
 from modules import (
     search_candidates, search_nearby, get_place_details,
-    summarize_reviews, infer_store_type,
-    infer_recommendation, classify_tags,
+    analyze_store,
     upsert_store, build_page_url,
     build_photo_url, TYPE_ICON, SUBTYPE_ICON,
     build_rating_stars, calc_distance,
@@ -32,7 +32,17 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # ======================
 # 状態管理
 # ======================
-user_state = {}   # user_id : { mode, place_id, details, summary, tags, store_type, recs }
+user_state = {}   # user_id : { mode, place_id, details, summary, tags, store_type, recs, _ts }
+
+USER_STATE_TTL = 1800  # セッション有効期限：30分
+
+
+def _cleanup_stale_sessions():
+    """有効期限切れのセッションをメモリから削除する"""
+    now = time.time()
+    expired = [uid for uid, s in list(user_state.items()) if now - s.get("_ts", 0) > USER_STATE_TTL]
+    for uid in expired:
+        user_state.pop(uid, None)
 
 
 # ======================
@@ -201,6 +211,7 @@ def build_store_info_flex(details, summary, tags, store_type, recs, place_id):
 # ======================
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    _cleanup_stale_sessions()
     user_id = event.source.user_id
     data = event.postback.data
 
@@ -267,6 +278,7 @@ def handle_postback(event):
             return
 
         user_state[user_id]["mode"] = "waiting_comment"
+        user_state[user_id]["_ts"] = time.time()
 
         line_bot_api.reply_message(
             event.reply_token,
@@ -280,6 +292,7 @@ def handle_postback(event):
 # ======================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
+    _cleanup_stale_sessions()
     user_id = event.source.user_id
     text = event.message.text.strip()
 
@@ -298,7 +311,7 @@ def handle_text_message(event):
     # ① 🔍検索（リッチメニュー） → 検索モードに入る
     # ===========================================
     if text.startswith("🔍検索"):
-        user_state[user_id] = {"mode": "search"}
+        user_state[user_id] = {"mode": "search", "_ts": time.time()}
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("🔍 店名で検索するよ！\n調べたいお店の名前を送ってね。")
@@ -309,7 +322,7 @@ def handle_text_message(event):
     # 📍近くのおすすめ（リッチメニュー）
     # ===========================================
     if text.startswith("📍近くのおすすめ"):
-        user_state[user_id] = {"mode": "recommend"}
+        user_state[user_id] = {"mode": "recommend", "_ts": time.time()}
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
@@ -381,6 +394,7 @@ def handle_text_message(event):
         # シチュエーションを保存
         situation = text
         user_state[user_id]["situation"] = situation
+        user_state[user_id]["_ts"] = time.time()
 
         # 即時応答
         line_bot_api.reply_message(
@@ -439,22 +453,20 @@ def process_candidate_search_async(user_id, query):
 # 店舗選択後の本処理（AI解析 → Flex生成 → push_message）
 # ======================
 def process_store_selection_async(user_id, place_id):
-    # 情報取得 & AI解析
+    # 情報取得 & AI解析（1回のAPIコール）
     details = get_place_details(place_id)
-    summary = summarize_reviews(details.get("reviews", []))
-    tags = classify_tags(details["name"], details.get("types", []), summary)
-    store_type = infer_store_type(details.get("types", []), summary)
-    recs = infer_recommendation(details.get("types", []), summary, details["name"])
+    result = analyze_store(details["name"], details.get("types", []), details.get("reviews", []))
 
     # 状態保存
     user_state[user_id] = {
         "mode": "await_save",
         "place_id": place_id,
         "details": details,
-        "summary": summary,
-        "tags": tags,
-        "store_type": store_type,
-        "recs": recs,
+        "summary": result["summary"],
+        "tags": result["tags"],
+        "store_type": result["store_type"],
+        "recs": result["recs"],
+        "_ts": time.time(),
     }
 
     # Flexを作る
@@ -533,6 +545,7 @@ def handle_location(event):
     # 位置情報保存
     user_state[user_id]["lat"] = lat
     user_state[user_id]["lng"] = lng
+    user_state[user_id]["_ts"] = time.time()
 
     # 次はシチュエーション入力
     line_bot_api.reply_message(
@@ -569,15 +582,12 @@ def process_recommend_search_async(user_id):
 
     ranked = []
 
-    # ② 各店の詳細と推論（上位5件のみ）
+    # ② 各店の詳細と推論（上位5件のみ、1店あたり1回のAPIコール）
     for c in nearby_candidates[:5]:
         details = get_place_details(c["place_id"])
 
-        # GPT推論
-        summary = summarize_reviews(details.get("reviews", []))
-        tags = classify_tags(details["name"], details.get("types", []), summary)
-        store_type = infer_store_type(details.get("types", []), summary)
-        recs = infer_recommendation(details.get("types", []), summary, details["name"])
+        result = analyze_store(details["name"], details.get("types", []), details.get("reviews", []))
+        summary, tags, store_type, recs = result["summary"], result["tags"], result["store_type"], result["recs"]
 
         # ③ Notion 保存（初回のみ）
         upsert_store(details, summary, tags, store_type, recs, "")
@@ -585,7 +595,6 @@ def process_recommend_search_async(user_id):
         # ④ スコア計算
         score = calc_recommend_score(details, store_type, tags, lat, lng, situation)
 
-        # summaryもタプルに含めて使い回しを防ぐ（バグ修正）
         ranked.append((score, details, summary, tags, store_type, recs))
 
     # スコア順に並べる
